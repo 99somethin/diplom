@@ -17,6 +17,7 @@ class UserBaseSchema(UserBackGroundSchema):
     role: UserRole = Field(default=None)
     profile_completed: bool = Field()
 
+
 class UserBaseOutSchema(UserBackGroundSchema):
     is_active: bool = Field(default=True)
     profile_completed: bool = Field()

@@ -1,49 +1,40 @@
-from fastapi import HTTPException, status
-
-from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.employer import Employer
-from app.models.user import User as UserModel
 from app.schemas.employer import EmployerBase, EmployerCreateSchema
 from app.schemas.unions import UserEmployerSchema, UserEmployerUpdateSchema
 
+from app.repository.employer_repo import EmployerRepository
+from app.repository.auth_repo import AuthRepository
+from app.core.exceptions import (
+    EmployerIsNotFound,
+    EmployereIsAlreadyExist,
+    EmailIsBusyException,
+)
 
-class Employer_Service:
+
+class EmployerService:
     async def get_profile(self, user, db: AsyncSession):
-        stmt = select(Employer).where(Employer.user_id == user.id)
-        res = await db.scalars(stmt)
-        employer = res.first()
-        if not employer:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Employer profile not found",
-            )
+        employer = await EmployerRepository.get_one_or_none(db, user_id=user.id)
+        if employer is None:
+            raise EmployerIsNotFound
 
         return UserEmployerSchema.model_validate({"user": user, "employer": employer})
 
     async def create_profile(
         self, user, profile_data: EmployerCreateSchema, db: AsyncSession
     ):
-        stmt = select(Employer).where(Employer.user_id == user.id)
-        db_request = await db.scalars(stmt)
-        result = db_request.first()
-
+        result = await EmployerRepository.get_one_or_none(db, user_id=user.id)
         if result is not None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            raise EmployereIsAlreadyExist
 
-        employer = Employer(
+        employer = await EmployerRepository.add(
+            db,
             company_name=profile_data.company_name,
             company_description=profile_data.company_description,
-            industry=profile_data.industry, 
+            industry=profile_data.industry,
             location=profile_data.location,
             user_id=user.id,
         )
-
-        db.add(employer)
-        await db.flush()
-        await db.refresh(employer)
-
         return EmployerBase.model_validate(employer)
 
     async def update_profile(
@@ -51,38 +42,28 @@ class Employer_Service:
     ):
         user_update = update_data.user.model_dump(exclude_unset=True)
 
-        email = user_update.get("email", False)
-        if email:
-            stmt = select(UserModel).where(UserModel.email == email)
-            res = await db.scalars(stmt)
-            email_exist = res.first()
-
+        received_email = user_update.get("email", False)
+        if received_email:
+            email_exist = await AuthRepository.get_one_or_none(db, email=received_email)
             if email_exist:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, detail="Email already exists"
-                )
-            user.email = email
+                raise EmailIsBusyException
+            user.email = received_email
+
         if user_update.get("full_name", False):
             user.full_name = user_update.get("full_name")
-
-        db.add(user)
-        await db.flush()
+        await AuthRepository.update(db, user)
 
         employer_update = update_data.employer.model_dump(exclude_unset=True)
+        employer = await EmployerRepository.get_one_or_none(db, user_id=user.id)
 
-        if employer_update:
-            stmt = (
-                update(Employer)
-                .where(Employer.user_id == user.id)
-                .values(**employer_update)
-            )
-            await db.execute(stmt)
+        for field, value in employer_update.values():
+            setattr(employer, field, value)
 
-        stmt = select(Employer).where(Employer.user_id == user.id)
-        res = await db.scalars(stmt)
-        employer = res.first()
+        await EmployerRepository.update(db, employer)
 
-        return UserEmployerUpdateSchema.model_validate({"user": user, "employer": employer})
+        return UserEmployerUpdateSchema.model_validate(
+            {"user": user, "employer": employer}
+        )
 
 
-employer_service = Employer_Service()
+employer_service = EmployerService()

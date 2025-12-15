@@ -1,10 +1,8 @@
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status
 
-from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_async_db, get_current_employer
-from app.models.project import Project as ProjectModel
 from app.models.employer import Employer
 from app.schemas.project import (
     ProjectMinOut,
@@ -17,37 +15,23 @@ from app.schemas.project import (
 
 from typing import List
 
+from app.services.project_service import project_service
+
 router = APIRouter(prefix="/projects", tags=["Open projects"])
 
 
 @router.get("/", response_model=List[ProjectMinOut])
 async def get_projects(db_session: AsyncSession = Depends(get_async_db)):
-    stmt = select(ProjectModel)
-    db_request = await db_session.scalars(stmt)
-    projects = db_request.all()
-
-    if not projects:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Projects not found"
-        )
-
+    projects = await project_service.get_projects(db_session)
     return projects
 
 
 @router.get("/employer_projects", response_model=List[ProjectMinOut])
-async def get_projects(
+async def get_employer_projects(
     employer: Employer = Depends(get_current_employer),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(ProjectModel).where(ProjectModel.employer_id == employer.id)
-    db_request = await db_session.scalars(stmt)
-    projects = db_request.all()
-
-    if not projects:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Projects not found"
-        )
-
+    projects = await project_service.get_employer_projects(db_session, employer.id)
     return projects
 
 
@@ -55,15 +39,7 @@ async def get_projects(
 async def get_full_project(
     project_id: int, db_session: AsyncSession = Depends(get_async_db)
 ):
-    stmt = select(ProjectModel).where(ProjectModel.id == project_id)
-    db_request = await db_session.scalars(stmt)
-    project = db_request.first()
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Projects not found"
-        )
-
+    project = await project_service.get_full_project(db_session, project_id)
     return project
 
 
@@ -73,12 +49,7 @@ async def create_project(
     employer: Employer = Depends(get_current_employer),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    project = ProjectModel(**project.model_dump(), employer_id=employer.id)
-
-    db_session.add(project)
-    await db_session.commit()
-    await db_session.refresh(project)
-
+    project = await project_service.create_project(db_session, project, employer.id)
     return project
 
 
@@ -89,30 +60,9 @@ async def update_project(
     employer: Employer = Depends(get_current_employer),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(ProjectModel).where(
-        ProjectModel.employer_id == employer.id, ProjectModel.id == project_id
+    project = await project_service.update_project(
+        db_session, project_id, update_data, employer.id
     )
-    db_request = await db_session.scalars(stmt)
-    project = db_request.first()
-
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Projects not found"
-        )
-
-    payload = update_data.model_dump(exclude_unset=True, exclude_none=True)
-
-    for forbidden in ("id", "employer_id"):
-        payload.pop(forbidden, None)
-
-    for key, value in payload.items():
-        if hasattr(project, key):
-            setattr(project, key, value)
-
-    db_session.add(project)
-    await db_session.commit()
-    await db_session.refresh(project)
-
     return project
 
 
@@ -122,18 +72,5 @@ async def delete_project(
     employer: Employer = Depends(get_current_employer),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(ProjectModel).where(
-        ProjectModel.employer_id == employer.id, ProjectModel.id == project_id
-    )
-    result = await db_session.scalars(stmt)
-    project = result.first()
-
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
-        )
-
-    await db_session.execute(delete(ProjectModel).where(ProjectModel.id == project_id))
-    await db_session.commit()
-
+    await project_service.delete_project(db_session, project_id, employer.id)
     return {"message": "deleted successfully"}

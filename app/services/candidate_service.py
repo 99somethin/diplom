@@ -1,24 +1,22 @@
-from fastapi import HTTPException, status
-
-from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.candidate import CandidateCreateSchema, CandidateBase
 from app.schemas.unions import UserCandidateSchema, UserCandidateUpdateSchema
-from app.models.candidate import Candidate
-from app.models.user import UserRole, User as UserModel
+
+from app.repository.candidate_repo import CandidateRepository
+from app.core.exceptions import (
+    CandidateIsNotExist,
+    CandidateIsAlreadyExist,
+    EmailIsBusyException,
+)
+from app.repository.auth_repo import AuthRepository
 
 
-class Candidate_Service:
+class CandidateService:
     async def get_profile(self, user, db: AsyncSession):
-        stmt = select(Candidate).where(Candidate.user_id == user.id)
-        res = await db.scalars(stmt)
-        candidate = res.first()
-        if not candidate:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Candidate profile not found",
-            )
+        candidate = await CandidateRepository.get_one_or_none(db, user_id=user.id)
+        if candidate is None:
+            raise CandidateIsNotExist
 
         return UserCandidateSchema.model_validate(
             {"user": user, "candidate": candidate}
@@ -27,25 +25,16 @@ class Candidate_Service:
     async def create_profile(
         self, user, profile_data: CandidateCreateSchema, db: AsyncSession
     ):
-        stmt = select(Candidate).where(Candidate.user_id == user.id)
-        res = await db.scalars(stmt)
-        existing = res.first()
-
+        existing = await CandidateRepository.get_one_or_none(db, user_id=user.id)
         if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail="Email already exists"
-            )
+            raise CandidateIsAlreadyExist
 
-        candidate = Candidate(
+        candidate = await CandidateRepository.add(
+            db,
             bio=profile_data.bio,
             resume_link=profile_data.resume_link,
             user_id=user.id,
         )
-
-        db.add(candidate)
-        await db.flush()
-        await db.refresh(candidate)
-
         return CandidateBase.model_validate(candidate)
 
     async def update_profile(
@@ -53,39 +42,26 @@ class Candidate_Service:
     ):
         user_update = update_data.user.model_dump(exclude_unset=True)
 
-        email = user_update.get("email", False)
-        if email:
-            stmt = select(UserModel).where(UserModel.email == email)
-            res = await db.scalars(stmt)
-            email_exist = res.first()
-
+        received_email = user_update.get("email", False)
+        if received_email:
+            email_exist = await AuthRepository.get_one_or_none(db, email=received_email)
             if email_exist:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, detail="Email already exists"
-                )
-            user.email = email
+                raise EmailIsBusyException
+            user.email = received_email
         if user_update.get("full_name", False):
             user.full_name = user_update.get("full_name")
+        await AuthRepository.update(db, user)
 
-        db.add(user)
-        await db.flush()
-
+        candidate = await CandidateRepository.get_one_or_none(user_id=user.id)
         candidate_update = update_data.candidate.model_dump(exclude_unset=True)
 
-        if candidate_update:
-            stmt = (
-                update(Candidate)
-                .where(Candidate.user_id == user.id)
-                .values(**candidate_update)
-            )
-            await db.execute(stmt)
+        for field, value in candidate_update.items():
+            setattr(candidate, field, value)
+        await CandidateRepository.update(db, candidate)
 
-        stmt = select(Candidate).where(Candidate.user_id == user.id)
-        res = await db.scalars(stmt)
-        candidate = res.first()
-
-        return UserCandidateUpdateSchema.model_validate({"user": user, "candidate": candidate})
+        return UserCandidateUpdateSchema.model_validate(
+            {"user": user, "candidate": candidate}
+        )
 
 
-candidate_service = Candidate_Service()
-
+candidate_service = CandidateService()

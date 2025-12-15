@@ -1,14 +1,25 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import Depends, Request, Response
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.unit_of_work import get_async_db
-from app.models.user import User as UserModel, UserRole
-from app.models.employer import Employer
-from app.models.candidate import Candidate
+from app.models.user import UserRole
 
-from app.services.auth_service import verify_or_refresh_tokens
+from app.core.utils import verify_or_refresh_tokens
+
+from app.repository.auth_repo import AuthRepository
+from app.repository.employer_repo import EmployerRepository
+from app.repository.candidate_repo import CandidateRepository
+from app.core.exceptions import (
+    InvalidToken,
+    UserIsNotExist,
+    InvalidTokenMissingSub,
+    UserRoleNotAdmin,
+    EmployerIsNotFound,
+    UserRoleNotEmployer,
+    CandidateIsNotExist,
+    UserRoleNotCandidate,
+)
 
 
 async def get_current_user(
@@ -19,60 +30,45 @@ async def get_current_user(
     payload = verify_or_refresh_tokens(request, response)
     sub = payload.get("sub")
     if sub is None:
-        raise HTTPException(status_code=401, detail="Invalid token: missing sub")
+        raise InvalidTokenMissingSub
 
     try:
         user_id = int(sub)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid token subject")
+        raise InvalidToken
 
-    stmt = select(UserModel).where(UserModel.is_active == True, UserModel.id == user_id)
-    db_request = await db_session.scalars(stmt)
-    user = db_request.first()
-
+    user = await AuthRepository.get_one_or_none(db_session, is_active=True, id=user_id)
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User is not found"
-        )
-
+        raise UserIsNotExist
     return user
 
 
 async def get_current_admin(user=Depends(get_current_user)):
     if user.role != UserRole.admin:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="User role is not admin"
-        )
+        raise UserRoleNotAdmin
     return user
 
 
-async def get_current_employer(user=Depends(get_current_user), db_session: AsyncSession = Depends(get_async_db),):
+async def get_current_employer(
+    user=Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_async_db),
+):
     if user.role != UserRole.employer:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="User role is not employer"
-        )
-    stmt = select(Employer).where(Employer.user_id == user.id)
-    db_request = await db_session.scalars(stmt)
-    employer = db_request.first()
+        raise UserRoleNotEmployer
 
+    employer = await EmployerRepository.get_one_or_none(db_session, user_id=user.id)
     if employer is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User is not found"
-        )
+        raise EmployerIsNotFound
     return employer
 
 
-async def get_current_candidate(user=Depends(get_current_user), db_session: AsyncSession = Depends(get_async_db),):
+async def get_current_candidate(
+    user=Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_async_db),
+):
     if user.role != UserRole.candidate:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="User role is not candidate"
-        )
-    stmt = select(Candidate).where(Candidate.user_id == user.id)
-    db_request = await db_session.scalars(stmt)
-    candidate = db_request.first()
-
+        raise UserRoleNotCandidate
+    candidate = await CandidateRepository.get_one_or_none(db_session, user_id=user.id)
     if candidate is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User is not found"
-        )
+        raise CandidateIsNotExist
     return candidate

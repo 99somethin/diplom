@@ -1,8 +1,6 @@
-from fastapi import Body
+from pydantic import Field
 
-from pydantic import Field, BaseModel
-
-from typing import Union, Annotated, Optional
+from typing import Union, Annotated
 
 from app.schemas.employer import EmployerBase
 from app.schemas.candidate import CandidateBase

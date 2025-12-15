@@ -1,9 +1,9 @@
 from pydantic import BaseModel, Field, ConfigDict
 
-from typing import Optional, Literal
+from typing import Literal
 
-from app.schemas.candidate import CandidateBase, CandidateBaseOut, CandidateUpdateSchema
-from app.schemas.employer import EmployerBase, EmployerBaseOut, EmployerUpdateSchema
+from app.schemas.candidate import CandidateBaseOut, CandidateUpdateSchema
+from app.schemas.employer import EmployerBaseOut, EmployerUpdateSchema
 from app.schemas.user import UserBaseOutSchema, UserUpdateSchema
 
 

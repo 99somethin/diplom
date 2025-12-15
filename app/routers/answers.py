@@ -1,7 +1,5 @@
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status
 
-from sqlalchemy import select, delete
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import (
@@ -9,10 +7,8 @@ from app.core.dependencies import (
     get_current_candidate,
     get_current_employer,
 )
-from app.models.answer import Answer as AnswerModel
 from app.models.candidate import Candidate
 from app.models.employer import Employer
-from app.models.project import Project
 from app.schemas.answer import (
     AnswerOut,
     AnswerCreateIn,
@@ -24,6 +20,8 @@ from app.schemas.answer import (
 
 from typing import List
 
+from app.services.answear_service import answear_service
+
 router = APIRouter(prefix="/answers", tags=["Answer's endpoints"])
 
 
@@ -32,10 +30,7 @@ async def get_candidate_answers(
     candidate: Candidate = Depends(get_current_candidate),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(AnswerModel).where(AnswerModel.candidate_id == candidate.id)
-    db_request = await db_session.scalars(stmt)
-    answers = db_request.all()
-
+    answers = await answear_service.get_candidate_answers(db_session, candidate.id)
     return answers
 
 
@@ -45,14 +40,9 @@ async def get_project_answers(
     employer: Employer = Depends(get_current_employer),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = (
-        select(AnswerModel)
-        .join(Project, AnswerModel.project_id == Project.id)
-        .where(Project.id == project_id, Project.employer_id == employer.id)
+    answers = await answear_service.get_project_answers(
+        db_session, project_id, employer.id
     )
-    db_request = await db_session.scalars(stmt)
-    answers = db_request.all()
-
     return answers
 
 
@@ -62,17 +52,9 @@ async def get_candidate_project_answer(
     candidate: Candidate = Depends(get_current_candidate),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(AnswerModel).where(
-        AnswerModel.candidate_id == candidate.id, AnswerModel.project_id == project_id
+    answer = answear_service.get_candidate_project_answer(
+        db_session, project_id, candidate.id
     )
-    db_request = await db_session.scalars(stmt)
-    answer = db_request.first()
-
-    if answer is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Answer not found"
-        )
-
     return answer
 
 
@@ -83,33 +65,9 @@ async def create_answer(
     candidate: Candidate = Depends(get_current_candidate),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(Project).where(Project.id == project_id)
-    db_request = await db_session.scalars(stmt)
-    project = db_request.first()
-
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
-        )
-
-    existing_answer = await db_session.scalar(
-        select(AnswerModel).where(
-            AnswerModel.candidate_id == candidate.id,
-            AnswerModel.project_id == project_id,
-        )
+    answer = await answear_service.create_answer(
+        db_session, project_id, answer_data, candidate.id
     )
-
-    if existing_answer:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Вы уже отправили ответ на этот проект."
-        )
-
-    answer = AnswerModel(
-        **answer_data.model_dump(), project_id=project_id, candidate_id=candidate.id
-    )
-
-    db_session.add(answer)
-    await db_session.commit()
     return answer
 
 
@@ -120,18 +78,9 @@ async def add_review_feedback(
     employer: Employer = Depends(get_current_employer),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(AnswerModel).options(selectinload(AnswerModel.project)).where(AnswerModel.id == answer_id)
-    res = await db_session.scalars(stmt)
-    answer = res.first()
-    if answer is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Answer not found")
-
-    if not answer.project or answer.project.employer_id != employer.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed to review this answer")
-    
-    answer.review_feedback = feedback_data.review_feedback
-    await db_session.commit()
-
+    answer = await answear_service.add_review(
+        db_session, answer_id, feedback_data, employer.id
+    )
     return answer
 
 
@@ -142,24 +91,9 @@ async def update_answer(
     candidate: Candidate = Depends(get_current_candidate),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(AnswerModel).where(
-        AnswerModel.candidate_id == candidate.id, AnswerModel.id == answer_id
+    answer = await answear_service.update_answer(
+        db_session, answer_id, update_data, candidate.id
     )
-    db_request = await db_session.scalars(stmt)
-    answer = db_request.first()
-
-    if answer is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Answer not found"
-        )
-
-    payload = update_data.model_dump(exclude_unset=True, exclude_none=True)
-
-    for key, value in payload.items():
-        if hasattr(answer, key):
-            setattr(answer, key, value)
-
-    await db_session.commit()
     return answer
 
 
@@ -169,18 +103,5 @@ async def delete_answer(
     candidate: Candidate = Depends(get_current_candidate),
     db_session: AsyncSession = Depends(get_async_db),
 ):
-    stmt = select(AnswerModel).where(
-        AnswerModel.candidate_id == candidate.id, AnswerModel.id == answer_id
-    )
-    result = await db_session.scalars(stmt)
-    answer = result.first()
-
-    if answer is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Answer not found"
-        )
-
-    await db_session.execute(delete(AnswerModel).where(AnswerModel.id == answer_id))
-    await db_session.commit()
-
+    await answear_service.delete_answer(db_session, answer_id, candidate.id)
     return {"message": "deleted successfully"}
